@@ -39,7 +39,7 @@ def fix_perspective(frame):
     frame_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     frame_seg = cv2.inRange(frame_hsv, min_hsv, max_hsv)
     _, contours, _ = cv2.findContours(frame_seg, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    contours = sorted(contours, key=cv2.contourArea)[0:4] #4 Largest Contours
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)[0:4] #4 Largest Contours
 
     #Find Coordinates of Corners
     corners = np.zeros((4, 2))
@@ -74,7 +74,7 @@ def fix_perspective(frame):
 def find_rat(frame):
     gray_img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blur_img = cv2.GaussianBlur(gray_img, (5, 5), 0)
-    _, thresh = cv2.threshold(blur_img, 20, 255, cv2.THRESH_BINARY_INV)
+    _, thresh = cv2.threshold(blur_img, 50, 255, cv2.THRESH_BINARY_INV)
 
     kernel = np.ones((5, 5), np.uint8)
     thresh = cv2.erode(thresh, kernel, iterations = 1)
@@ -103,6 +103,23 @@ def progress_bar(its):
     return progressbar.ProgressBar(maxval=its, widgets=[progressbar.Bar('=', '[', ']'),
                                                        ' ', progressbar.Percentage()])
 
+def equalize_image(frame):
+    #Adapted from: https://stackoverflow.com/questions/15007304/histogram-equalization-not-working-on-color-image-opencv
+    frame_ycrcb = cv2.cvtColor(frame,cv2.COLOR_BGR2YCR_CB)
+    channels = cv2.split(frame_ycrcb)
+    cv2.equalizeHist(channels[0],channels[0])
+    cv2.merge(channels,frame_ycrcb)
+    cv2.cvtColor(frame_ycrcb,cv2.COLOR_YCR_CB2BGR,frame)
+
+    #hsv = cv2.cvtColor(frame,cv2.COLOR_BGR2HSV)
+    #hsv[:,:,2] += 30
+    #hsv = np.clip(hsv,0,255)
+    #cv2.cvtColor(hsv,cv2.COLOR_HSV2BGR,frame)
+
+    #im = plt.imshow(frame)
+    #plt.show()
+    return frame
+
 def track_rat(fname, corners=None,length=-1):
     if length <= 0:
         length = np.inf
@@ -112,6 +129,7 @@ def track_rat(fname, corners=None,length=-1):
 
     cap = cv2.VideoCapture(fname)
     ret, frame = cap.read()
+    frame = equalize_image(frame)
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -148,6 +166,7 @@ def track_rat(fname, corners=None,length=-1):
         bar = progress_bar(num_frames-1)
         bar.start()
         while ret and tot_time <= length + 2:
+            frame = equalize_image(frame)
             frame_num = int(cap.get(cv2.CAP_PROP_POS_FRAMES))-1
             frame_cropped = crop(frame, region)
             frame_cropped = cv2.warpPerspective(frame_cropped, perspective_transform, (600, 600), borderValue=(255, 255, 255))
@@ -156,6 +175,7 @@ def track_rat(fname, corners=None,length=-1):
             if rat is None:
                 rat_pos[frame_num, 1] = np.NaN
                 rat_pos[frame_num, 2] = np.NaN
+                annotated = frame_cropped.copy()
             else:
                 rat_pos[frame_num, 1] = cx
                 rat_pos[frame_num, 2] = cy
@@ -168,7 +188,8 @@ def track_rat(fname, corners=None,length=-1):
                     annotated = cv2.polylines(frame_cropped.copy(), [pts], False, (180, 119, 31), 2)
                     cv2.drawContours(annotated, [rat], -1, (14, 127, 255), 3)
 
-                    out.write(annotated)
+            if frame_num % 2 == 0:
+                out.write(annotated)
 
             ret, frame = cap.read()
 
@@ -179,10 +200,11 @@ def track_rat(fname, corners=None,length=-1):
         cap.release()
         out.release()
 
-        rat_pos = rat_pos[~np.isnan(rat_pos).any(axis=1)] #Trim out any NaN
+        #rat_pos = rat_pos[~np.isnan(rat_pos).any(axis=1)] #Trim out any NaN
         rat_pos = rat_pos[2*int(fps):, :] #Trim out the first half second with the hand
         return rat_pos
     except Exception as err:
+        print('Fuckkkkkk')
         cap.release()
         out.release()
         #print(err)
@@ -200,10 +222,10 @@ def track_folder(folder, corners=None,length=-1):
             print('Already Tracked')
             continue
         rat_pos = track_rat(vid, corners=corners,length=length)
-
         np.savetxt(folder + '/' + basename + '.csv', rat_pos, delimiter=', ', header='Time (s), x (AU), y (AU)')
 
         #Summary stats
+        rat_pos = rat_pos[~np.isnan(rat_pos).any(axis=1)]  # Trim out any NaN
         total_time = rat_pos[-1, 0] - rat_pos[0, 0]
         avg_speed = np.sum(np.diff(rat_pos, axis=0)[:, 1:]**2) / total_time
 
@@ -239,7 +261,7 @@ def track_folder(folder, corners=None,length=-1):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Track rats in a video')
     parser.add_argument('folder', help='Folder with videos to track rats in',type=str)
-    parser.add_argument('-L', '--length',help='Length of output video after rat shows up (in s)', type=float, default=-1)
+    parser.add_argument('-L', '--length',help='Length of output video after rat shows up (in s). Defaults to 5 min. Set to -1 for entire video', type=float, default=300)
     args = parser.parse_args()
 
     track_folder(args.folder,length=args.length)
